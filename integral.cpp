@@ -1,363 +1,82 @@
-#include <stdlib.h>
-
-#include <stdio.h>
-
-#include <math.h>
-
-#include <time.h>
-
 #include "mpi.h"
+#include "stdio.h"
+#include  <time.h>
+#include <math.h>
+const double a = 0.0;//Нижний предел
+const double b = 1.0;//Верхний предел
+const double h = 0.000001;//Шаг интегрирования
 
-#include <iostream>
 
-int main(int argc, char *argv[]);
+using namespace std;
 
-double f(double x);
-
-void timestamp(void);
-
-/******************************************************************************/
-
-int main(int argc, char *argv[])
-
+double fnc(double x)//Интегрируемая функция
 {
-	setlocale(LC_ALL, "Russian");
-	double end_time;
+	return 4 / (1 + x * x);
+}
 
-	double h;
 
-	int i;
+int main(int argc, char** argv)
+{
+	int myrank, ranksize, i;
+	clock_t start, finish;
 
-	int ierr;
-
-	int m;
-
-	int master = 0;
-
-	int n;
-
-	int process;
-
-	int process_id;
-
-	int process_num;
-
-	double q_global;
-
-	double q_local;
-
-	int received;
-
-	int source;
-
-	double start_time;
-
-	MPI_Status status;
-
-	int tag;
-
-	int target;
-
-	double x;
-
-	double xb[2];
-
-	double x_max = 3.0;
-
-	double x_min = 0.0;
-
-	ierr = MPI_Init(&argc, &argv);
-
-	/*
-
-	Определим номер текущего процессора.
-
-	*/
-
-	ierr = MPI_Comm_rank(MPI_COMM_WORLD, &process_id);
-
-	/*
-
-	Получение количества процессоров
-
-	*/
-
-	ierr = MPI_Comm_size(MPI_COMM_WORLD, &process_num);
-
-	/*
-
-	Проверка количества доступных процессоров
-
-	*/
-
-	if (process_id == master)
-
-	{
-
-		timestamp();
-
-		printf(" количество процессоров %d ", process_num);
-
-		start_time = MPI_Wtime();
-
-		if (process_num <= 1)
-
+	MPI_Init(&argc, &argv);//Инициализация MPI
+//Определяем свой номер в группе:
+	MPI_Comm_rank(MPI_COMM_WORLD, &myrank);
+	//Определяем размер группы:
+	MPI_Comm_size(MPI_COMM_WORLD, &ranksize);
+	double cur_a, cur_b, d_ba, cur_h;
+	double* sbuf = NULL;
+	if (!myrank)
+	{//Это процесс-мастер
+		//Определяем размер диапазона для каждого процесса:
+		d_ba = (b - a) / ranksize;
+		sbuf = new double[ranksize * 3];
+		cur_a = a;
+		cur_h = h;
+		for (i = 0; i < ranksize; i++)
 		{
-
-
-			ierr = MPI_Finalize();
-
-
-			exit(1);
-
+			cur_b = cur_a + d_ba - h;
+			sbuf[i * 3] = cur_a;
+			sbuf[i * 3 + 1] = cur_b;
+			sbuf[i * 3 + 2] = h;
+			cur_a += d_ba;
 		}
-
 	}
+	double rbuf[3];
 
-	printf(" ");
+	start = clock();
+	//Рассылка всем процессам, включая процесс-мастер
+	//начальных данных для расчета:
+	MPI_Scatter(sbuf, 3, MPI_DOUBLE, rbuf, 3, MPI_DOUBLE, 0,
+		MPI_COMM_WORLD);
+	if (sbuf) delete[]sbuf;
+	cur_a = rbuf[0]; cur_b = rbuf[1]; cur_h = rbuf[2];
+	//Расчет интеграла в своем диапазоне, выполняют все 
+	//процессы:
+	double s = 0;
+	printf("Process %d. A=%.4f B=%.4f h=%.10f\n",
+		myrank, cur_a, cur_b, cur_h);
+	for (cur_a += cur_h; cur_a <= cur_b; cur_a += cur_h)
+		s += cur_h * fnc(cur_a);
+	rbuf[0] = s;
+	if (!myrank) sbuf = new double[ranksize];
+	//Собираем значения интегралов от процессов:
+	MPI_Gather(rbuf, 1, MPI_DOUBLE, sbuf, 1, MPI_DOUBLE, 0,
+		MPI_COMM_WORLD);
+	if (!myrank)
+	{//Это процесс-мастер
+		//Суммирование интегралов, полученных каждым 
+		//процессом:
+		for (i = 0, s = 0; i < ranksize; i++) s += sbuf[i];
+		finish = clock();
+		//Печать результата:
+		printf("Integral value: %.4f\n", s);
+		printf("Time: %.4f\n", (double)(finish - start) / CLOCKS_PER_SEC);
 
-	/*
-
-	рассчет точек концов подинтервалов и их рассылка по процессорам - адресатам.
-
-	*/
-
-	if (process_id == master)
-
-	{
-
-		for (process = 1; process <= process_num - 1; process++)
-
-		{
-
-			xb[0] = ((double)(process_num - process) * x_min
-
-				+ (double)(process - 1) * x_max)
-
-				/ (double)(process_num - 1);
-
-			xb[1] = ((double)(process_num - process - 1) * x_min
-
-				+ (double)(process)* x_max)
-
-				/ (double)(process_num - 1);
-
-			target = process;
-
-			tag = 1;
-
-			printf("Точки интервалов %f! ", xb[0]);
-
-			ierr = MPI_Send(xb, 2, MPI_DOUBLE, target, tag, MPI_COMM_WORLD);
-
-		}
-
+		delete[]sbuf;
 	}
-
-	else
-
-	{
-
-		source = master;
-
-		tag = 1;
-
-		ierr = MPI_Recv(xb, 2, MPI_DOUBLE, source, tag, MPI_COMM_WORLD, &status);
-
-	}
-
-	/*
-
-	дождемся, когда все процессоры получать свои назначения.
-
-	*/
-
-	ierr = MPI_Barrier(MPI_COMM_WORLD);
-
-	
-	/*
-
-	каждому процессору нужно передать количество точек
-
-	для вычислений по широковещательной рассылке.
-
-	*/
-
-	m = 100;
-
-	source = master;
-
-	ierr = MPI_Bcast(&m, 1, MPI_INT, source, MPI_COMM_WORLD);
-
-	/*
-
-	каждый процессор выполняет вычисления над своим интервалом и передает результат
-
-	процессору 0.
-
-	*/
-
-	if (process_id!= master)
-
-	{
-
-		q_local = 0.0;
-
-		printf("Процессор %d активен! ", process_id);
-
-		for (i = 1; i <= m; i++)
-
-		{
-
-			x = ((double)(2 * m - 2 * i + 1) * xb[0]
-
-				+ (double)(2 * i - 1) * xb[1])
-
-				/ (double)(2 * m);
-
-			q_local = q_local + f(x);
-
-		}
-
-		q_local = q_local * (xb[1] - xb[0]) / (double)(m);
-
-		target = master;
-
-		tag = 2;
-
-		ierr = MPI_Send(&q_local, 1, MPI_DOUBLE, target, tag, MPI_COMM_WORLD);
-
-	}
-
-	/*
-
-	процессор 0 ждет N-1 промежуточного результата.
-
-	*/
-
-	else
-
-	{
-
-		received = 0;
-
-		q_global = 0.0;
-
-		while (received < process_num - 1)
-
-		{
-
-			source = MPI_ANY_SOURCE;
-
-			tag = 2;
-
-			ierr = MPI_Recv(&q_local, 1, MPI_DOUBLE, source, tag, MPI_COMM_WORLD,
-
-				&status);
-
-			q_global = q_global + q_local;
-
-			received = received + 1;
-
-		}
-
-	}
-
-	/*
-
-	главный процессор выдает результат
-
-	*/
-
-	if (process_id == master)
-
-	{
-
-		printf(" ");
-
-		printf("Главный процессор: ");
-
-		printf(" Интеграл ф-ии F (x) = %f ", q_global);
-
-		printf(" Ошибка вычислений %f ", q_global - 0.624);
-
-		end_time = MPI_Wtime();
-
-		printf(" ");
-
-		printf(" Время, затраченное на вычисления = %f ",
-
-			end_time - start_time);
-
-	}
-
-	/*
-
-	Terminate MPI.
-
-	*/
-
-	ierr = MPI_Finalize();
-
-	/*
-
-	Termiante.
-
-	*/
-
-	if (process_id == master)
-
-	{
-
-		printf(" ");
-		printf(" ");
-
-		timestamp();
-
-	}
-
+	MPI_Finalize();//Завершение работы с MPI
+	getchar();
 	return 0;
-
-}
-
-/************************************************************/
-
-double f(double x)
-
-{
-
-	double value;
-
-	value = 2.0*cos(x) / (2.0 + x * x);
-
-	return value;
-
-}
-
-/************************************************************/
-
-void timestamp(void)
-
-{
-
-# define TIME_SIZE 40
-
-	static char time_buffer[TIME_SIZE];
-
-	const struct tm *tm;
-
-	time_t now;
-
-	now = time(NULL);
-
-	tm = localtime(&now);
-
-	strftime(time_buffer, TIME_SIZE, "%d %B %Y %I: %M: %S %p", tm);
-
-	printf("%s ", time_buffer);
-
-	return;
-
-# undef TIME_SIZE
-
 }
